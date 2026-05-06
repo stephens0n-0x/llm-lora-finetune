@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+outputs/
+*.bin
+*.safetensors
+.env
+.DS_Store
+notebooks/.ipynb_checkpoints/.idea/

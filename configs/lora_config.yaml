@@ -1,0 +1,36 @@
+# Model configuration
+model:
+  name: "HuggingFaceTB/SmolLM2-1.7B-Instruct"  # swap to meta-llama/Llama-3.2-1B-Instruct when approved
+  torch_dtype: "bfloat16"  # bfloat16 is more stable than float16 on Apple Silicon
+
+# LoRA configuration
+lora:
+  r: 16                      # rank — controls how many params we train. higher = more expressive but more memory
+  lora_alpha: 32             # scaling factor. rule of thumb: always 2x your rank
+  lora_dropout: 0.05         # small dropout to prevent overfitting on small datasets
+  bias: "none"               # don't train bias terms, keeps trainable params minimal
+  task_type: "CAUSAL_LM"     # we're fine-tuning a causal language model
+  target_modules:            # which weight matrices to apply LoRA to
+    - "q_proj"               # query projection in attention
+    - "k_proj"               # key projection in attention
+    - "v_proj"               # value projection in attention
+    - "o_proj"               # output projection in attention
+
+# Data configuration
+data:
+  dataset_name: "databricks/databricks-dolly-15k"  # high quality instruction dataset, no login needed
+  max_length: 512            # max token length per sample
+  train_split: 0.95          # 95% train, 5% validation
+  num_samples: 5000          # we don't need all 15k, 5k trains fast and still gives good results
+
+# Training configuration
+training:
+  output_dir: "outputs/lora-adapter"   # where the trained LoRA weights are saved
+  num_epochs: 3
+  batch_size: 1
+  gradient_accumulation_steps: 8       # effective batch size = 1 * 8 = 8
+  learning_rate: 2e-4                  # standard for LoRA fine-tuning
+  warmup_ratio: 0.05                   # warm up LR for first 5% of steps to stabilize early training
+  lr_scheduler: "cosine"              # decay LR smoothly to zero
+  save_best_only: true                 # only keep the checkpoint with lowest validation loss
+  logging_steps: 20                    # print loss every 20 steps
