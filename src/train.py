@@ -1,6 +1,5 @@
 import os
 import gc
-import yaml
 import torch
 from transformers import (
     AutoModelForCausalLM,
@@ -13,46 +12,43 @@ from peft import LoraConfig, get_peft_model, TaskType
 from data_utils import load_config, get_dataset
 
 
-def load_model_and_tokenizer(config: dict):
+def get_device():
     """
-    Load the base model and tokenizer.
+    Detect the best available device in order of preference:
+    CUDA (Nvidia) > MPS (Apple Silicon) > CPU.
+    Returns both the device string and capability flags for TrainingArguments.
+    """
+    if torch.cuda.is_available():
+        return "cuda", True, False
+    elif torch.backends.mps.is_available():
+        return "mps", False, True
+    else:
+        return "cpu", False, False
 
-    We load in bfloat16 to halve memory usage vs float32.
-    We do NOT use 4-bit quantization (bitsandbytes) here because
-    bitsandbytes has limited MPS support on Apple Silicon.
-    QLoRA is the move when you have a CUDA GPU — on M1 we use
-    bfloat16 + LoRA which is still very memory efficient.
-    """
+
+def load_model_and_tokenizer(config: dict, device: str):
+    """Load the base model and tokenizer onto the detected device."""
     model_name = config["model"]["name"]
-    dtype = getattr(torch, config["model"]["torch_dtype"])  # converts "bfloat16" string to torch.bfloat16
+    dtype = getattr(torch, config["model"]["torch_dtype"])
 
-    print(f"[model] Loading {model_name}...")
+    print(f"[model] Loading {model_name} on {device.upper()}...")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # SmolLM2 and Llama both need a padding token set explicitly
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
-        # device_map="auto" lets accelerate decide whether to use MPS or CPU
-        # it will use MPS for the model weights and fall back to CPU if needed
-        device_map="auto",
+        device_map={"": device},  # explicitly map all layers to our detected device
     )
 
     return model, tokenizer
 
 
 def apply_lora(model, config: dict):
-    """
-    Wrap the base model with LoRA adapters using the PEFT library.
-
-    After this function, only the A and B matrices (the adapters) are
-    trainable. The base model weights are completely frozen.
-    This is the core of what makes LoRA memory efficient.
-    """
+    """Wrap the base model with LoRA adapters — freezes base weights, injects A+B matrices."""
     lora_cfg = config["lora"]
 
     lora_config = LoraConfig(
@@ -70,14 +66,13 @@ def apply_lora(model, config: dict):
     return model
 
 
-def get_training_args(config: dict) -> TrainingArguments:
+def get_training_args(config: dict, use_cuda: bool, use_mps: bool) -> TrainingArguments:
     """
-    Build HuggingFace TrainingArguments from our YAML config.
+    Build TrainingArguments with device-aware flags.
 
-    TrainingArguments is the HuggingFace abstraction over the training loop.
-    It handles logging, checkpointing, LR scheduling, and device management
-    so we don't have to write a manual training loop like in the receipt project.
-    This is how production fine-tuning pipelines are structured.
+    bf16=True only works on CUDA — passing it on MPS causes a crash.
+    On MPS we rely on bfloat16 being set at model load time via torch_dtype,
+    not via the Trainer flag.
     """
     train_cfg = config["training"]
 
@@ -91,14 +86,16 @@ def get_training_args(config: dict) -> TrainingArguments:
         lr_scheduler_type=train_cfg["lr_scheduler"],
         warmup_ratio=train_cfg["warmup_ratio"],
         logging_steps=train_cfg["logging_steps"],
-        eval_strategy="epoch",           # run validation at the end of every epoch
-        save_strategy="epoch",           # save a checkpoint at the end of every epoch
+        eval_strategy="epoch",
+        save_strategy="epoch",
         load_best_model_at_end=train_cfg["save_best_only"],
         metric_for_best_model="eval_loss",
-        greater_is_better=False,         # lower eval_loss = better model
-        bf16=True,                       # use bfloat16 for training on Apple Silicon
-        report_to="none",                # disable wandb/tensorboard for now, keeps it simple
-        remove_unused_columns=False,     # important: keep our custom 'labels' column
+        greater_is_better=False,
+        bf16=use_cuda,           # CUDA only — bfloat16 training precision flag
+        use_cpu=not use_cuda and not use_mps,    # prevents Trainer from looking for CUDA on Mac
+        use_mps_device=use_mps,  # explicitly enables MPS backend for Trainer
+        report_to="none",
+        remove_unused_columns=False,
     )
 
 
@@ -106,26 +103,30 @@ def train():
     config_path = os.path.join(os.path.dirname(__file__), "..", "configs", "lora_config.yaml")
     config = load_config(config_path)
 
-    # ── Step 1: Load model and tokenizer ──────────────────────────────────────
-    model, tokenizer = load_model_and_tokenizer(config)
+    # ── Step 1: Detect device ──────────────────────────────────────────────────
+    device, use_cuda, use_mps = get_device()
+    print(f"[device] Using: {device.upper()}")
 
-    # ── Step 2: Inject LoRA adapters, freeze base weights ─────────────────────
+    # ── Step 2: Load model and tokenizer ──────────────────────────────────────
+    model, tokenizer = load_model_and_tokenizer(config, device)
+
+    # ── Step 3: Inject LoRA adapters, freeze base weights ─────────────────────
     model = apply_lora(model, config)
 
-    # ── Step 3: Load and tokenize dataset ─────────────────────────────────────
+    # ── Step 4: Load and tokenize dataset ─────────────────────────────────────
     train_dataset, val_dataset = get_dataset(config_path, tokenizer)
 
-    # ── Step 4: Data collator ──────────────────────────────────────────────────
+    # ── Step 5: Data collator ──────────────────────────────────────────────────
     collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         model=model,
         padding=True,
-        pad_to_multiple_of=8,   # pads sequence length to multiples of 8 for efficiency
-        label_pad_token_id=-100, # ensures padding in labels is also masked from loss
+        pad_to_multiple_of=8,
+        label_pad_token_id=-100,
     )
 
-    # ── Step 5: Build trainer and run ─────────────────────────────────────────
-    training_args = get_training_args(config)
+    # ── Step 6: Build trainer and run ─────────────────────────────────────────
+    training_args = get_training_args(config, use_cuda, use_mps)
 
     trainer = Trainer(
         model=model,
@@ -139,16 +140,16 @@ def train():
     print("\n[train] Starting training...\n")
     trainer.train()
 
-    # ── Step 6: Save the final LoRA adapter ───────────────────────────────────
+    # ── Step 7: Save the LoRA adapter (not the full model — adapter is ~30MB) ──
     adapter_path = config["training"]["output_dir"]
     model.save_pretrained(adapter_path)
     tokenizer.save_pretrained(adapter_path)
     print(f"\n[train] LoRA adapter saved to {adapter_path}")
 
-    # Free memory after training
+    # ── Step 8: Free memory ────────────────────────────────────────────────────
     del model
     gc.collect()
-    if torch.backends.mps.is_available():
+    if use_mps:
         torch.mps.empty_cache()
 
 
