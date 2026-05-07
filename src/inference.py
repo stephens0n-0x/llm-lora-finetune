@@ -28,15 +28,10 @@ def load_model_for_inference(config: dict):
         device_map="auto",
     )
 
-    # Check if a trained adapter exists — if not, run as base model
-    # This lets you test the file even before training finishes
     adapter_config_path = os.path.join(adapter_path, "adapter_config.json")
     if os.path.exists(adapter_config_path):
         print(f"[inference] Loading LoRA adapter from: {adapter_path}")
-        # PeftModel loads the base model + adapter together
         model = PeftModel.from_pretrained(model, adapter_path)
-        # merge_and_unload fuses the adapter into the base weights
-        # result is a clean model with no PEFT overhead at inference time
         model = model.merge_and_unload()
         print("[inference] Adapter merged into base model")
     else:
@@ -64,11 +59,8 @@ def generate_response(
     prompt = (
         f"<|im_start|>user\n{user_message}<|im_end|>\n"
         f"<|im_start|>assistant\n"
-        # Note: we do NOT close the assistant tag here —
-        # the model generates the response and closes it itself
     )
 
-    # Determine device from model parameters
     device = next(model.parameters()).device
 
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -79,18 +71,16 @@ def generate_response(
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            temperature=0.7,       # higher than 0.3 = more creative, good for conversation
+            temperature=0.7,
             top_p=0.9,
             repetition_penalty=1.1,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
 
-    # Slice off the input tokens — we only want the newly generated part
     new_tokens = output_ids[0][input_length:]
     response = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
-    # Clean up any trailing ChatML tags the model may have generated
     response = response.replace("<|im_end|>", "").strip()
 
     return response
@@ -125,10 +115,7 @@ def chat(config_path: str):
             print("[history cleared]\n")
             continue
 
-        # Build context from history + current message
-        # We prepend recent turns so the model has conversational context
         if conversation_history:
-            # Include last 3 exchanges max — keeps prompt length manageable
             recent = conversation_history[-3:]
             history_text = ""
             for turn in recent:
@@ -143,7 +130,6 @@ def chat(config_path: str):
 
         response = generate_response(model, tokenizer, full_input, config)
 
-        # Store this turn in history
         conversation_history.append({
             "user": user_input,
             "assistant": response,

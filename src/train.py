@@ -64,11 +64,7 @@ def apply_lora(model, config: dict):
         target_modules=lora_cfg["target_modules"],
     )
 
-    # get_peft_model wraps the model — freezes base weights, injects A+B matrices
     model = get_peft_model(model, lora_config)
-
-    # This prints a summary showing trainable vs frozen params
-    # On your CV you can say: "trained X parameters out of Y total (Z%)"
     model.print_trainable_parameters()
 
     return model
@@ -120,9 +116,6 @@ def train():
     train_dataset, val_dataset = get_dataset(config_path, tokenizer)
 
     # ── Step 4: Data collator ──────────────────────────────────────────────────
-    # DataCollatorForSeq2Seq handles dynamic padding — it pads each batch to
-    # the length of the longest sample in that batch, not the global max_length.
-    # This is more memory efficient than padding everything to 512 upfront.
     collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         model=model,
@@ -147,9 +140,6 @@ def train():
     trainer.train()
 
     # ── Step 6: Save the final LoRA adapter ───────────────────────────────────
-    # We save ONLY the adapter weights, not the full model.
-    # The adapter is ~10-50MB. The full model would be ~3GB.
-    # At inference time we load the base model + adapter separately and merge them.
     adapter_path = config["training"]["output_dir"]
     model.save_pretrained(adapter_path)
     tokenizer.save_pretrained(adapter_path)

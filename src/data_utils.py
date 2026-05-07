@@ -26,14 +26,10 @@ def format_sample(sample: dict) -> str:
     context = sample.get("context", "").strip()
     response = sample.get("response", "").strip()
 
-    # If there is additional context, weave it into the user message
     if context:
         user_message = f"{instruction}\n\n{context}"
     else:
         user_message = instruction
-
-    # ChatML format: <|im_start|>role\ncontent<|im_end|>
-    # This is the standard for SmolLM2-Instruct and Llama-3-Instruct
     prompt = (
         f"<|im_start|>user\n{user_message}<|im_end|>\n"
         f"<|im_start|>assistant\n{response}<|im_end|>"
@@ -64,11 +60,8 @@ def tokenize_sample(sample: dict, tokenizer: AutoTokenizer, max_length: int) -> 
         return_tensors=None, # return plain lists, not tensors (datasets library prefers this)
     )
 
-    # Build labels: start as a copy of input_ids
     labels = tokenized["input_ids"].copy()
 
-    # Find where the assistant response starts so we can mask everything before it
-    # We tokenize just the instruction part to find its length
     instruction_part = (
         f"<|im_start|>user\n{sample.get('instruction', '').strip()}"
     )
@@ -85,7 +78,6 @@ def tokenize_sample(sample: dict, tokenizer: AutoTokenizer, max_length: int) -> 
     )
     prompt_len = len(instruction_tokens["input_ids"])
 
-    # Mask prompt tokens — model learns to GENERATE responses, not memorize prompts
     for i in range(min(prompt_len, len(labels))):
         labels[i] = -100
 
@@ -104,16 +96,13 @@ def get_dataset(config_path: str, tokenizer: AutoTokenizer):
     print(f"[data] Loading {data_cfg['dataset_name']}...")
     dataset = load_dataset(data_cfg["dataset_name"], split="train")
 
-    # Take a random subset — we don't need all 15k samples
     dataset = dataset.shuffle(seed=42).select(range(data_cfg["num_samples"]))
     print(f"[data] Using {len(dataset)} samples")
 
-    # Tokenize every sample — we pass tokenizer and max_length via a lambda
-    # because datasets .map() only passes the sample dict by default
     print("[data] Tokenizing...")
     dataset = dataset.map(
         lambda sample: tokenize_sample(sample, tokenizer, data_cfg["max_length"]),
-        remove_columns=dataset.column_names,  # drop raw text columns, keep only token ids
+        remove_columns=dataset.column_names,
     )
 
     # Train / validation split
