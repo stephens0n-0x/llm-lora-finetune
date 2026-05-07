@@ -84,7 +84,7 @@ def get_training_args(config: dict, use_cuda: bool, use_mps: bool) -> TrainingAr
         gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
         learning_rate=train_cfg["learning_rate"],
         lr_scheduler_type=train_cfg["lr_scheduler"],
-        warmup_ratio=train_cfg["warmup_ratio"],
+        warmup_steps=50,
         logging_steps=train_cfg["logging_steps"],
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -92,8 +92,6 @@ def get_training_args(config: dict, use_cuda: bool, use_mps: bool) -> TrainingAr
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         bf16=use_cuda,           # CUDA only — bfloat16 training precision flag
-        use_cpu=not use_cuda and not use_mps,    # prevents Trainer from looking for CUDA on Mac
-        use_mps_device=use_mps,  # explicitly enables MPS backend for Trainer
         report_to="none",
         remove_unused_columns=False,
     )
@@ -134,7 +132,7 @@ def train():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     print("\n[train] Starting training...\n")

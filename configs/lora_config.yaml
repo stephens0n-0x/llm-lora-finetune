@@ -30,7 +30,7 @@ training:
   batch_size: 1
   gradient_accumulation_steps: 8       # effective batch size = 1 * 8 = 8
   learning_rate: 2e-4                  # standard for LoRA fine-tuning
-  warmup_ratio: 0.05                   # warm up LR for first 5% of steps to stabilize early training
+  warmup_steps: 50
   lr_scheduler: "cosine"              # decay LR smoothly to zero
   save_best_only: true                 # only keep the checkpoint with lowest validation loss
   logging_steps: 20                    # print loss every 20 steps
